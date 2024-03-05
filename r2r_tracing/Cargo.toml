@@ -1,0 +1,18 @@
+[package]
+name = "r2r_tracing"
+version = "0.1.0"
+
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lttng-ust = { git = "https://github.com/skoudmar/lttng-ust-rs.git"}
+r2r_rcl = { path = "../r2r_rcl", version = "0.8.3" }
+
+[build-dependencies]
+lttng-ust-generate = { git = "https://github.com/skoudmar/lttng-ust-rs.git"}
+
+[patch.crates-io]
+#lttng-ust-generate = { path = "../../lttng-ust-rs/lttng-ust-generate"}
+#lttng-ust = { path = "../../lttng-ust-rs/lttng-ust"}
