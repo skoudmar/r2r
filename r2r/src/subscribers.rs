@@ -55,6 +55,8 @@ where
             rcl_take(&self.rcl_handle, msg.void_ptr_mut(), &mut msg_info, std::ptr::null_mut())
         };
         if ret == RCL_RET_OK as i32 {
+            r2r_tracing::trace_take_ptr(msg.void_ptr());
+
             let msg = T::from_native(&msg);
             if let Err(e) = self.sender.try_send(msg) {
                 if e.is_disconnected() {
@@ -134,6 +136,9 @@ where
                 new_msg
             }
         };
+
+        r2r_tracing::trace_take_ptr(msg.void_ptr());
+
         if let Err(e) = self.sender.try_send(msg) {
             if e.is_disconnected() {
                 // user dropped the handle to the stream, signal removal.
@@ -164,6 +169,8 @@ impl Subscriber_ for UntypedSubscriber {
             rcl_take(&self.rcl_handle, msg.void_ptr_mut(), &mut msg_info, std::ptr::null_mut())
         };
         if ret == RCL_RET_OK as i32 {
+            r2r_tracing::trace_take_ptr(msg.void_ptr());
+
             let json = msg.to_json();
             if let Err(e) = self.sender.try_send(json) {
                 if e.is_disconnected() {
@@ -207,6 +214,8 @@ impl Subscriber_ for RawSubscriber {
             std::slice::from_raw_parts(self.msg_buf.buffer, self.msg_buf.buffer_length).to_vec()
         };
 
+        r2r_tracing::trace_take(&self.msg_buf);
+
         if let Err(e) = self.sender.try_send(data_bytes) {
             if e.is_disconnected() {
                 // user dropped the handle to the stream, signal removal.
@@ -229,9 +238,11 @@ impl Subscriber_ for RawSubscriber {
 pub fn create_subscription_helper(
     node: &mut rcl_node_t, topic: &str, ts: *const rosidl_message_type_support_t,
     qos_profile: QosProfile,
-) -> Result<rcl_subscription_t> {
+) -> Result<(rcl_subscription_t, *const rcl_subscription_t)> {
     let mut subscription_handle = unsafe { rcl_get_zero_initialized_subscription() };
     let topic_c_string = CString::new(topic).map_err(|_| Error::RCL_RET_INVALID_ARGUMENT)?;
+    // Use only as id. It will become dangling pointer.
+    let subscription_id = &subscription_handle as *const _;
 
     let result = unsafe {
         let mut subscription_options = rcl_subscription_get_default_options();
@@ -245,7 +256,7 @@ pub fn create_subscription_helper(
         )
     };
     if result == RCL_RET_OK as i32 {
-        Ok(subscription_handle)
+        Ok((subscription_handle, subscription_id))
     } else {
         Err(Error::from_rcl_error(result))
     }

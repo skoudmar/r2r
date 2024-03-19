@@ -1,12 +1,13 @@
 use crate::{
     trace_callback_register, trace_service_callback_added, trace_subscription_callback_added,
-    trace_timer_callback_added,
+    trace_timer_callback_added, TracingId,
 };
 use r2r_rcl::{rcl_service_t, rcl_timer_t};
-use std::any::type_name;
-use std::marker::PhantomData;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
+use std::{
+    any::type_name,
+    marker::PhantomData,
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
+};
 
 pub struct Callback<F, M>
 where
@@ -42,7 +43,7 @@ where
         Self::new(callback, id)
     }
 
-    pub fn new_timer(timer: *const rcl_timer_t, callback: F) -> Self {
+    pub fn new_timer(timer: TracingId<rcl_timer_t>, callback: F) -> Self {
         let id = Self::gen_id();
         trace_timer_callback_added(timer, id);
 

@@ -4,6 +4,7 @@ use futures::{
     stream::{Stream, StreamExt},
 };
 use indexmap::IndexMap;
+use r2r_tracing::TracingId;
 use std::{
     collections::HashMap,
     ffi::{CStr, CString},
@@ -533,7 +534,7 @@ impl Node {
     where
         T: WrappedTypesupport,
     {
-        let subscription_handle =
+        let (subscription_handle, subscription_id) =
             create_subscription_helper(self.node_handle.as_mut(), topic, T::get_ts(), qos_profile)?;
         let (sender, receiver) = mpsc::channel::<T>(10);
 
@@ -542,7 +543,42 @@ impl Node {
             sender,
         };
         self.subscribers.push(Box::new(ws));
+
+        r2r_tracing::trace_subscription_init(subscription_id, &receiver);
+
         Ok(receiver)
+    }
+
+    /// Subscribe to a ROS topic.
+    ///
+    /// This function returns a `Stream` of ros messages.
+    pub fn subscribe_trace<T: 'static, F>(
+        &mut self, topic: &str, qos_profile: QosProfile, callback: F,
+    ) -> Result<impl Future<Output = ()> + Unpin>
+    where
+        T: WrappedTypesupport,
+        F: FnMut(T),
+    {
+        let (subscription_handle, subscription_id) =
+            create_subscription_helper(self.node_handle.as_mut(), topic, T::get_ts(), qos_profile)?;
+        let (sender, receiver) = mpsc::channel::<T>(10);
+        eprintln!("subscribe_trace: {:p}", &subscription_handle);
+
+        let ws = TypedSubscriber {
+            rcl_handle: subscription_handle,
+            sender,
+        };
+        self.subscribers.push(Box::new(ws));
+
+        r2r_tracing::trace_subscription_init(subscription_id, &receiver);
+
+        let mut callback = r2r_tracing::Callback::new_subscription(&receiver, callback);
+        let fut = receiver.for_each(move |msg| {
+            callback.call(msg);
+            future::ready(())
+        });
+
+        Ok(fut)
     }
 
     /// Subscribe to a ROS topic.
@@ -554,7 +590,7 @@ impl Node {
     where
         T: WrappedTypesupport,
     {
-        let subscription_handle =
+        let (subscription_handle, subscription_id) =
             create_subscription_helper(self.node_handle.as_mut(), topic, T::get_ts(), qos_profile)?;
         let (sender, receiver) = mpsc::channel::<WrappedNativeMsg<T>>(10);
 
@@ -563,6 +599,9 @@ impl Node {
             sender,
         };
         self.subscribers.push(Box::new(ws));
+
+        r2r_tracing::trace_subscription_init(subscription_id, &receiver);
+
         Ok(receiver)
     }
 
@@ -574,7 +613,7 @@ impl Node {
         &mut self, topic: &str, topic_type: &str, qos_profile: QosProfile,
     ) -> Result<impl Stream<Item = Result<serde_json::Value>> + Unpin> {
         let msg = WrappedNativeMsgUntyped::new_from(topic_type)?;
-        let subscription_handle =
+        let (subscription_handle, subscription_id) =
             create_subscription_helper(self.node_handle.as_mut(), topic, msg.ts, qos_profile)?;
         let (sender, receiver) = mpsc::channel::<Result<serde_json::Value>>(10);
 
@@ -584,6 +623,9 @@ impl Node {
             sender,
         };
         self.subscribers.push(Box::new(ws));
+
+        r2r_tracing::trace_subscription_init(subscription_id, &receiver);
+
         Ok(receiver)
     }
 
@@ -619,7 +661,7 @@ impl Node {
             return Err(Error::from_rcl_error(ret));
         }
 
-        let subscription_handle =
+        let (subscription_handle, subscription_id) =
             create_subscription_helper(self.node_handle.as_mut(), topic, msg.ts, qos_profile)?;
         let (sender, receiver) = mpsc::channel::<Vec<u8>>(10);
 
@@ -629,6 +671,9 @@ impl Node {
             sender,
         };
         self.subscribers.push(Box::new(ws));
+
+        r2r_tracing::trace_subscription_init(subscription_id, &receiver);
+
         Ok(receiver)
     }
 
@@ -862,6 +907,8 @@ impl Node {
     /// `timeout` is a duration specifying how long the spin should
     /// block for if there are no pending events.
     pub fn spin_once(&mut self, timeout: Duration) {
+        r2r_tracing::trace_spin_start(&*self.node_handle, timeout);
+
         // first handle any completed action cancellation responses
         for a in &mut self.action_servers {
             a.lock().unwrap().send_completed_cancel_requests();
@@ -1025,6 +1072,7 @@ impl Node {
             unsafe {
                 rcl_wait_set_fini(&mut ws);
             }
+            r2r_tracing::trace_spin_timeout(&*self.node_handle);
             return;
         }
 
@@ -1175,6 +1223,8 @@ impl Node {
         unsafe {
             rcl_wait_set_fini(&mut ws);
         }
+
+        r2r_tracing::trace_spin_end(&*self.node_handle);
     }
 
     /// Returns a map of topic names and type names of the publishers
@@ -1271,9 +1321,15 @@ impl Node {
             _clock: Some(clock), // The timer owns the clock.
             sender: tx,
         };
-        self.timers.push(timer);
 
-        let out_timer = Timer { receiver: rx };
+        let out_timer = unsafe {
+            Timer {
+                receiver: rx,
+                timer_handle: TracingId::new(timer.get_handle()),
+                node_handle: TracingId::new(&*self.node_handle),
+            }
+        };
+        self.timers.push(timer);
 
         Ok(out_timer)
     }
@@ -1294,9 +1350,15 @@ impl Node {
             _clock: None, // The timer does not own the clock (the node owns it).
             sender: tx,
         };
-        self.timers.push(timer);
 
-        let out_timer = Timer { receiver: rx };
+        let out_timer = unsafe {
+            Timer {
+                receiver: rx,
+                timer_handle: TracingId::new(timer.get_handle()),
+                node_handle: TracingId::new(&*self.node_handle),
+            }
+        };
+        self.timers.push(timer);
 
         Ok(out_timer)
     }
@@ -1428,6 +1490,8 @@ impl Drop for Timer_ {
 /// A ROS timer.
 pub struct Timer {
     receiver: mpsc::Receiver<Duration>,
+    timer_handle: TracingId<rcl_timer_t>,
+    node_handle: TracingId<rcl_node_t>,
 }
 
 impl Timer {
@@ -1441,6 +1505,16 @@ impl Timer {
         } else {
             Err(Error::RCL_RET_TIMER_INVALID)
         }
+    }
+
+    pub fn on_tick<F: FnMut(Duration)>(self, callback: F) -> impl Future<Output = ()> + Unpin {
+        let mut callback = r2r_tracing::Callback::new_timer(self.timer_handle, callback);
+        r2r_tracing::trace_timer_link_node(self.timer_handle, self.node_handle);
+
+        self.receiver.for_each(move |duration| {
+            callback.call(duration);
+            future::ready(())
+        })
     }
 }
 

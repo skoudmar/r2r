@@ -1,7 +1,6 @@
-use crate::tracetools_bindings as tp;
+use crate::{tracetools_bindings as tp, TracingId};
 use r2r_rcl::{rcl_node_t, rcl_service_t, rcl_subscription_t, rcl_timer_t};
-use std::ffi::CString;
-use std::ptr::null;
+use std::{ffi::CString, ptr::null};
 
 // Documentation copied from github:ros2/ros2_tracing project
 // TODO: Rewrite the docs according to Rust spec not C++
@@ -118,9 +117,9 @@ pub fn trace_service_callback_added(service: *const rcl_service_t, callback_id: 
  *  pointer to the `rcl_timer_t` handle of the timer this callback belongs to
  * \param[in] callback pointer to the callback object (`std::function`)
  */
-pub fn trace_timer_callback_added(timer: *const rcl_timer_t, callback_id: usize) {
+pub fn trace_timer_callback_added(timer: TracingId<rcl_timer_t>, callback_id: usize) {
     unsafe {
-        tp::ros_trace_rclcpp_timer_callback_added(c_void!(timer), c_void!(callback_id));
+        tp::ros_trace_rclcpp_timer_callback_added(timer.c_void(), c_void!(callback_id));
     }
 }
 
@@ -131,9 +130,9 @@ pub fn trace_timer_callback_added(timer: *const rcl_timer_t, callback_id: usize)
  * \param[in] timer_handle pointer to the timer's `rcl_timer_t` handle
  * \param[in] node_handle pointer to the `rcl_node_t` handle of the node the timer belongs to
  */
-pub fn trace_timer_link_node(timer: *const rcl_timer_t, node: *const rcl_node_t) {
+pub fn trace_timer_link_node(timer: TracingId<rcl_timer_t>, node: TracingId<rcl_node_t>) {
     unsafe {
-        tp::ros_trace_rclcpp_timer_link_node(c_void!(timer), c_void!(node));
+        tp::ros_trace_rclcpp_timer_link_node(timer.c_void(), node.c_void());
     }
 }
 

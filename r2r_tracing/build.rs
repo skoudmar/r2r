@@ -1,6 +1,5 @@
 use lttng_ust_generate::{CIntegerType, CTFType, Generator, Provider};
-use std::env;
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 macro_rules! create_tracepoint {
     ($provider:ident::$name:ident($($arg_name:ident: $arg_lttng_type:expr),* $(,)?)) => {

@@ -37,7 +37,7 @@ use r2r_rcl::*;
 unsafe impl<T> Send for Publisher<T> where T: WrappedTypesupport {}
 
 pub(crate) struct Publisher_ {
-    handle: rcl_publisher_t,
+    handle: Box<rcl_publisher_t>,
 
     // TODO use a mpsc to avoid the mutex?
     poll_inter_process_subscriber_channels: Mutex<Vec<oneshot::Sender<()>>>,
@@ -51,7 +51,7 @@ impl Publisher_ {
 
         let result = unsafe {
             rcl_publisher_get_subscription_count(
-                &self.handle as *const rcl_publisher_t,
+                &*self.handle as *const rcl_publisher_t,
                 &mut inter_process_subscription_count as *mut usize,
             )
         };
@@ -89,7 +89,7 @@ impl Publisher_ {
     }
 
     pub(crate) fn destroy(mut self, node: &mut rcl_node_t) {
-        let _ret = unsafe { rcl_publisher_fini(&mut self.handle as *mut _, node) };
+        let _ret = unsafe { rcl_publisher_fini(&mut *self.handle as *mut _, node) };
 
         // TODO: check ret
     }
@@ -138,14 +138,15 @@ pub fn create_publisher_helper(
     node: &mut rcl_node_t, topic: &str, typesupport: *const rosidl_message_type_support_t,
     qos_profile: QosProfile,
 ) -> Result<Publisher_> {
-    let mut publisher_handle = unsafe { rcl_get_zero_initialized_publisher() };
+    let mut publisher_handle = Box::new(unsafe { rcl_get_zero_initialized_publisher() });
+
     let topic_c_string = CString::new(topic).map_err(|_| Error::RCL_RET_INVALID_ARGUMENT)?;
 
     let result = unsafe {
         let mut publisher_options = rcl_publisher_get_default_options();
         publisher_options.qos = qos_profile.into();
         rcl_publisher_init(
-            &mut publisher_handle,
+            &mut *publisher_handle,
             node,
             typesupport,
             topic_c_string.as_ptr(),
@@ -176,9 +177,11 @@ impl PublisherUntyped {
         let native_msg = WrappedNativeMsgUntyped::new_from(&self.type_)?;
         native_msg.from_json(msg)?;
 
+        r2r_tracing::trace_publish(native_msg.void_ptr());
+
         let result = unsafe {
             rcl_publish(
-                &publisher.handle as *const rcl_publisher_t,
+                &*publisher.handle as *const rcl_publisher_t,
                 native_msg.void_ptr(),
                 std::ptr::null_mut(),
             )
@@ -214,9 +217,11 @@ impl PublisherUntyped {
             allocator: unsafe { rcutils_get_default_allocator() },
         };
 
+        // No tracepoint because it is not in rclcpp either
+
         let result = unsafe {
             rcl_publish_serialized_message(
-                &publisher.handle,
+                &*publisher.handle,
                 &msg_buf as *const rcl_serialized_message_t,
                 std::ptr::null_mut(),
             )
@@ -271,9 +276,12 @@ where
             .upgrade()
             .ok_or(Error::RCL_RET_PUBLISHER_INVALID)?;
         let native_msg: WrappedNativeMsg<T> = WrappedNativeMsg::<T>::from(msg);
+
+        r2r_tracing::trace_publish(native_msg.void_ptr());
+
         let result = unsafe {
             rcl_publish(
-                &publisher.handle as *const rcl_publisher_t,
+                &*publisher.handle as *const rcl_publisher_t,
                 native_msg.void_ptr(),
                 std::ptr::null_mut(),
             )
@@ -297,11 +305,12 @@ where
             .upgrade()
             .ok_or(Error::RCL_RET_PUBLISHER_INVALID)?;
 
-        if unsafe { rcl_publisher_can_loan_messages(&publisher.handle as *const rcl_publisher_t) } {
+        if unsafe { rcl_publisher_can_loan_messages(&*publisher.handle as *const rcl_publisher_t) }
+        {
             let mut loaned_msg: *mut c_void = std::ptr::null_mut();
             let ret = unsafe {
                 rcl_borrow_loaned_message(
-                    &publisher.handle as *const rcl_publisher_t,
+                    &*publisher.handle as *const rcl_publisher_t,
                     T::get_ts(),
                     &mut loaned_msg,
                 )
@@ -311,7 +320,7 @@ where
                 return Err(Error::from_rcl_error(ret));
             }
 
-            let handle_box = Box::new(publisher.handle);
+            let handle_box = publisher.handle.clone();
             let msg = WrappedNativeMsg::<T>::from_loaned(
                 loaned_msg as *mut T::CStruct,
                 Box::new(|msg: *mut T::CStruct| {
@@ -357,6 +366,8 @@ where
             .upgrade()
             .ok_or(Error::RCL_RET_PUBLISHER_INVALID)?;
 
+        r2r_tracing::trace_publish(msg.void_ptr());
+
         let result = if msg.is_loaned {
             unsafe {
                 // signal that we are relinquishing responsibility of the memory
@@ -364,7 +375,7 @@ where
 
                 // publish and return loaned message to middleware
                 rcl_publish_loaned_message(
-                    &publisher.handle as *const rcl_publisher_t,
+                    &*publisher.handle as *const rcl_publisher_t,
                     msg.void_ptr_mut(),
                     std::ptr::null_mut(),
                 )
@@ -372,7 +383,7 @@ where
         } else {
             unsafe {
                 rcl_publish(
-                    &publisher.handle as *const rcl_publisher_t,
+                    &*publisher.handle as *const rcl_publisher_t,
                     msg.void_ptr(),
                     std::ptr::null_mut(),
                 )
