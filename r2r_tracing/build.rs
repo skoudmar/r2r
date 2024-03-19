@@ -13,65 +13,33 @@ macro_rules! create_tracepoint {
 }
 
 fn main() {
-    generate_rclcpp_tracepoints();
+    tracetools_bindgen();
     generate_r2r_tracepoints();
 }
 
-fn generate_rclcpp_tracepoints() {
-    let mut ros2 = Provider::new("ros2");
-
-    create_tracepoint!(ros2::rclcpp_publish(
-        message: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-    create_tracepoint!(ros2::rclcpp_subscription_init(
-        subscription_handle: CTFType::IntegerHex(CIntegerType::USize),
-        subscription: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-    create_tracepoint!(ros2::rclcpp_subscription_callback_added(
-        subscription: CTFType::IntegerHex(CIntegerType::USize),
-        callback: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-    create_tracepoint!(ros2::rclcpp_take(
-        message: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-    create_tracepoint!(ros2::rclcpp_service_callback_added(
-        service_handle: CTFType::IntegerHex(CIntegerType::USize),
-        callback: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-    create_tracepoint!(ros2::rclcpp_timer_callback_added(
-        timer_handle: CTFType::IntegerHex(CIntegerType::USize),
-        callback: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-    create_tracepoint!(ros2::rclcpp_timer_link_node(
-        timer_handle: CTFType::IntegerHex(CIntegerType::USize),
-        node_handle: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-    create_tracepoint!(ros2::rclcpp_callback_register(
-        callback: CTFType::IntegerHex(CIntegerType::USize),
-        symbol: CTFType::String, // must be null terminated
-        // TODO: check if CTFType::SequenceText is better
-    ));
-    create_tracepoint!(ros2::callback_start(
-        callback: CTFType::IntegerHex(CIntegerType::USize),
-        is_intra_process: CTFType::Integer(CIntegerType::U8), // should be boolean
-    ));
-    create_tracepoint!(ros2::callback_end(
-        callback: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-    create_tracepoint!(ros2::rclcpp_executor_get_next_ready());
-    create_tracepoint!(ros2::rclcpp_executor_wait_for_work(
-        timeout: CTFType::Integer(CIntegerType::I64),
-    ));
-    create_tracepoint!(ros2::rclcpp_executor_execute(
-        handle: CTFType::IntegerHex(CIntegerType::USize),
-    ));
-
-    Generator::default()
-        .generated_lib_name("r2r_tracepoints_rclcpp")
-        .register_provider(ros2)
-        .output_file_name(PathBuf::from(env::var("OUT_DIR").unwrap()).join("rclcpp_tracepoints"))
+fn tracetools_bindgen() {
+    let bindings = r2r_common::setup_bindgen_builder()
+        .header("src/tracetools_wrapper.h")
+        .allowlist_function("ros_trace_.*")
+        .generate_comments(true)
+        // Tell cargo to invalidate the built crate whenever any of the
+        // included header files changed.
+        // .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
-        .expect("Unable to generate tracepoint bindings for r2r/rclcpp");
+        .expect("Unable to generate tracetools bindings");
+
+    // Tell cargo to look for shared libraries in the specified directory
+    // println!("cargo:rustc-link-search=/path/to/lib");
+
+    // Tell cargo to tell rustc to link the system bzip2
+    // shared library.
+    println!("cargo:rustc-link-lib=tracetools");
+
+    // Write the bindings to the $OUT_DIR/bindings.rs file.
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    bindings
+        .write_to_file(out_path.join("tracetools_bindings.rs"))
+        .expect("Couldn't write tracetools bindings!");
 }
 
 fn generate_r2r_tracepoints() {
@@ -82,19 +50,22 @@ fn generate_r2r_tracepoints() {
         timeout_s: CTFType::Integer(CIntegerType::U64),
         timeout_ns: CTFType::Integer(CIntegerType::U32),
     ));
-
     create_tracepoint!(r2r::spin_end(
         node_handle: CTFType::IntegerHex(CIntegerType::USize),
     ));
-
     create_tracepoint!(r2r::spin_timeout(
         node_handle: CTFType::IntegerHex(CIntegerType::USize),
+    ));
+    create_tracepoint!(r2r::update_time(
+        subscriber: CTFType::IntegerHex(CIntegerType::USize),
+        time_s: CTFType::Integer(CIntegerType::I32),
+        time_ns: CTFType::Integer(CIntegerType::U32),
     ));
 
     Generator::default()
         .generated_lib_name("r2r_tracepoints_r2r")
         .register_provider(r2r)
-        .output_file_name(PathBuf::from(env::var("OUT_DIR").unwrap()).join("r2r_tracepoints"))
+        .output_file_name(PathBuf::from(env::var("OUT_DIR").unwrap()).join("r2r_tracepoints.rs"))
         .generate()
         .expect("Unable to generate tracepoint bindings for r2r");
 }

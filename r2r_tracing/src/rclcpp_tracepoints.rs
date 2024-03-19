@@ -1,13 +1,24 @@
-use std::any::type_name;
+use crate::tracetools_bindings as tp;
+use r2r_rcl::{rcl_node_t, rcl_service_t, rcl_subscription_t, rcl_timer_t};
 use std::ffi::CString;
-use r2r_rcl::{rcl_node_t, rcl_subscription_t};
-use crate::rclcpp_tracepoints_internal::ros2 as tp;
+use std::ptr::null;
 
-// TODO: Format the docs according to rust not c++
-// TODO: All references must be stable (not change location)
+// Documentation copied from github:ros2/ros2_tracing project
+// TODO: Rewrite the docs according to Rust spec not C++
+// TODO: Check that all references and pointers must be stable (not change location)
 
 fn to_address<T>(t: &T) -> usize {
     t as *const T as usize
+}
+
+fn ref_to_c_void<T>(t: &T) -> *const std::ffi::c_void {
+    t as *const _ as *const std::ffi::c_void
+}
+
+macro_rules! c_void {
+    ($e:ident) => {
+        ($e as *const std::ffi::c_void)
+    };
 }
 
 /// `rclcpp_publish`
@@ -17,8 +28,10 @@ fn to_address<T>(t: &T) -> usize {
  *
  * \param[in] message pointer to the message being published
  */
-pub fn trace_publish<M>(message: &M) {
-    tp::rclcpp_publish(to_address(message));
+pub fn trace_publish(message: *const std::ffi::c_void) {
+    unsafe {
+        tp::ros_trace_rclcpp_publish(null(), message);
+    }
 }
 
 /// `rclcpp_subscription_init`
@@ -32,8 +45,15 @@ pub fn trace_publish<M>(message: &M) {
  *  pointer to the `rcl_subscription_t` handle of the subscription this object belongs to
  * \param[in] subscription pointer to this subscription object (e.g. `rclcpp::*Subscription*`)
  */
-pub fn trace_subscription_init<S>(subscription_handle: *const rcl_subscription_t, subscription: &S) {
-    tp::rclcpp_subscription_init(subscription_handle as usize, to_address(subscription));
+pub fn trace_subscription_init<S>(
+    subscription_handle: *const rcl_subscription_t, subscription: &S,
+) {
+    unsafe {
+        tp::ros_trace_rclcpp_subscription_init(
+            c_void!(subscription_handle),
+            ref_to_c_void(subscription),
+        );
+    }
 }
 
 /// `rclcpp_subscription_callback_added`
@@ -43,8 +63,13 @@ pub fn trace_subscription_init<S>(subscription_handle: *const rcl_subscription_t
  * \param[in] subscription pointer to the subscription object this callback belongs to
  * \param[in] callback pointer to this callback object (e.g. `rclcpp::AnySubscriptionCallback`)
  */
-pub fn trace_subscription_callback_added<S, C>(subscription: &S, callback: &C) {
-    tp::rclcpp_subscription_callback_added(to_address(subscription), to_address(callback));
+pub fn trace_subscription_callback_added<S>(subscription: &S, callback_id: usize) {
+    unsafe {
+        tp::ros_trace_rclcpp_subscription_callback_added(
+            ref_to_c_void(subscription),
+            c_void!(callback_id),
+        );
+    }
 }
 
 /// `rclcpp_take`
@@ -55,7 +80,22 @@ pub fn trace_subscription_callback_added<S, C>(subscription: &S, callback: &C) {
  * \param[in] message pointer to the message being taken
  */
 pub fn trace_take<M>(message: &M) {
-    tp::rclcpp_take(to_address(message));
+    unsafe {
+        tp::ros_trace_rclcpp_take(ref_to_c_void(message));
+    }
+}
+
+/// `rclcpp_take`
+/**
+ * Message taking.
+ * Notes the pointer to the message being taken at the `rclcpp` level.
+ *
+ * \param[in] message pointer to the message being taken
+ */
+pub fn trace_take_ptr(message: *const std::ffi::c_void) {
+    unsafe {
+        tp::ros_trace_rclcpp_take(message);
+    }
 }
 
 /// `rclcpp_service_callback_added`
@@ -66,8 +106,8 @@ pub fn trace_take<M>(message: &M) {
  *  pointer to the `rcl_service_t` handle of the service this callback belongs to
  * \param[in] callback pointer to this callback object (e.g. `rclcpp::AnyServiceCallback`)
  */
-pub fn trace_service_callback_added<S,C>(service: &S, callback: &C) {
-    tp::rclcpp_service_callback_added(to_address(service), to_address(callback));
+pub fn trace_service_callback_added(service: *const rcl_service_t, callback_id: usize) {
+    unsafe { tp::ros_trace_rclcpp_service_callback_added(c_void!(service), c_void!(callback_id)) }
 }
 
 /// `rclcpp_timer_callback_added`
@@ -78,8 +118,10 @@ pub fn trace_service_callback_added<S,C>(service: &S, callback: &C) {
  *  pointer to the `rcl_timer_t` handle of the timer this callback belongs to
  * \param[in] callback pointer to the callback object (`std::function`)
  */
-pub fn trace_timer_callback_added<T,C>(timer: &T, callback: &C) {
-    tp::rclcpp_timer_callback_added(to_address(timer), to_address(callback));
+pub fn trace_timer_callback_added(timer: *const rcl_timer_t, callback_id: usize) {
+    unsafe {
+        tp::ros_trace_rclcpp_timer_callback_added(c_void!(timer), c_void!(callback_id));
+    }
 }
 
 /// `rclcpp_timer_link_node`
@@ -89,8 +131,10 @@ pub fn trace_timer_callback_added<T,C>(timer: &T, callback: &C) {
  * \param[in] timer_handle pointer to the timer's `rcl_timer_t` handle
  * \param[in] node_handle pointer to the `rcl_node_t` handle of the node the timer belongs to
  */
-pub fn trace_timer_link_node<T>(timer: &T, node: *const rcl_node_t) {
-    tp::rclcpp_timer_link_node(to_address(timer), node as usize)
+pub fn trace_timer_link_node(timer: *const rcl_timer_t, node: *const rcl_node_t) {
+    unsafe {
+        tp::ros_trace_rclcpp_timer_link_node(c_void!(timer), c_void!(node));
+    }
 }
 
 /// `rclcpp_callback_register`
@@ -103,14 +147,13 @@ pub fn trace_timer_link_node<T>(timer: &T, node: *const rcl_node_t) {
  * \param[in] function_symbol demangled symbol of the callback function/lambda,
  *  see \ref get_symbol()
  */
-pub fn trace_callback_register<'a, C>(callback: &C, function_symbol: impl Into<Option<&'a str>>) {
-    let function_symbol = CString::new(
-        function_symbol
-            .into()
-            .unwrap_or_else(|| type_name::<C>()))
+pub fn trace_callback_register(callback_id: usize, function_symbol: &str) {
+    let function_symbol = CString::new(function_symbol)
         .expect("r2r tracing: Cannot convert function_symbol to CString");
 
-    tp::rclcpp_callback_register(to_address(callback), function_symbol.as_c_str());
+    unsafe {
+        tp::ros_trace_rclcpp_callback_register(c_void!(callback_id), function_symbol.as_ptr());
+    }
 }
 
 /// `callback_start`
@@ -122,13 +165,10 @@ pub fn trace_callback_register<'a, C>(callback: &C, function_symbol: impl Into<O
  *  `rclcpp::AnyServiceCallback`, timer `std::function`, etc.)
  * \param[in] is_intra_process whether this callback is done via intra-process or not
  */
-pub fn trace_callback_start<C>(callback: &C, is_intra_process: bool) {
-    let is_intra_process = match is_intra_process {
-        true => 1,
-        false => 0,
-    };
-
-    tp::callback_start(to_address(callback), is_intra_process);
+pub fn trace_callback_start(callback_id: usize, is_intra_process: bool) {
+    unsafe {
+        tp::ros_trace_callback_start(c_void!(callback_id), is_intra_process);
+    }
 }
 
 /// `callback_end`
@@ -139,8 +179,10 @@ pub fn trace_callback_start<C>(callback: &C, is_intra_process: bool) {
  *  (e.g. `rclcpp::AnySubscriptionCallback`,
  *  `rclcpp::AnyServiceCallback`, timer `std::function`, etc.)
  */
-pub fn trace_callback_end<C>(callback: &C) {
-    tp::callback_end(to_address(callback));
+pub fn trace_callback_end(callback_id: usize) {
+    unsafe {
+        tp::ros_trace_callback_end(c_void!(callback_id));
+    }
 }
 
 /// `rclcpp_executor_get_next_ready`
@@ -148,7 +190,9 @@ pub fn trace_callback_end<C>(callback: &C) {
  * Notes the start time of the executor phase that gets the next executable that's ready.
  */
 pub fn trace_executor_get_next_ready() {
-    tp::rclcpp_executor_get_next_ready();
+    unsafe {
+        tp::ros_trace_rclcpp_executor_get_next_ready();
+    }
 }
 
 /// `rclcpp_executor_wait_for_work`
@@ -158,7 +202,9 @@ pub fn trace_executor_get_next_ready() {
  * \param[in] timeout the timeout value for the wait call
  */
 pub fn trace_executor_wait_for_work(timeout: i64) {
-    tp::rclcpp_executor_wait_for_work(timeout);
+    unsafe {
+        tp::ros_trace_rclcpp_executor_wait_for_work(timeout);
+    }
 }
 
 /// `rclcpp_executor_execute`
@@ -171,9 +217,7 @@ pub fn trace_executor_wait_for_work(timeout: i64) {
  * \param[in] handle pointer to the `rcl` handle of the executable being executed
  */
 pub fn trace_executor_execute<H>(handle: *const H) {
-    tp::rclcpp_executor_execute(handle as usize);
+    unsafe {
+        tp::ros_trace_rclcpp_executor_execute(c_void!(handle));
+    }
 }
-
-
-
-
