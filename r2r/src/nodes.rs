@@ -287,150 +287,134 @@ impl Node {
         let (mut event_tx, event_rx) = mpsc::channel::<(String, ParameterValue)>(10);
 
         let node_name = self.name()?;
-        let set_params_request_stream = self
-            .create_service::<rcl_interfaces::srv::SetParameters::Service>(
-                &format!("{}/set_parameters", node_name),
-                QosProfile::default(),
-            )?;
-
         let params = self.params.clone();
         let params_struct_clone = params_struct.clone();
-        let set_params_future = set_params_request_stream.for_each(
-            move |req: ServiceRequest<rcl_interfaces::srv::SetParameters::Service>| {
-                let mut result = rcl_interfaces::srv::SetParameters::Response::default();
-                for p in &req.message.parameters {
-                    let val = ParameterValue::from_parameter_value_msg(p.value.clone());
-                    let changed = params
-                        .lock()
-                        .unwrap()
-                        .get(&p.name)
-                        .map(|v| v.value != val)
-                        .unwrap_or(true); // changed=true if new
-                    let r = if let Some(ps) = &params_struct_clone {
-                        // Update parameter structure
-                        let result = ps.lock().unwrap().set_parameter(&p.name, &val);
-                        if result.is_ok() {
-                            // Also update Node::params
+        let set_params_future = self
+            .create_service_traced::<rcl_interfaces::srv::SetParameters::Service, _>(
+                &format!("{}/set_parameters", node_name),
+                QosProfile::default(),
+                move |req: ServiceRequest<rcl_interfaces::srv::SetParameters::Service>| {
+                    let mut result = rcl_interfaces::srv::SetParameters::Response::default();
+                    for p in &req.message.parameters {
+                        let val = ParameterValue::from_parameter_value_msg(p.value.clone());
+                        let changed = params
+                            .lock()
+                            .unwrap()
+                            .get(&p.name)
+                            .map(|v| v.value != val)
+                            .unwrap_or(true); // changed=true if new
+                        let r = if let Some(ps) = &params_struct_clone {
+                            // Update parameter structure
+                            let result = ps.lock().unwrap().set_parameter(&p.name, &val);
+                            if result.is_ok() {
+                                // Also update Node::params
+                                params
+                                    .lock()
+                                    .unwrap()
+                                    .entry(p.name.clone())
+                                    .and_modify(|p| p.value = val.clone());
+                            }
+                            rcl_interfaces::msg::SetParametersResult {
+                                successful: result.is_ok(),
+                                reason: result.err().map_or("".into(), |e| e.to_string()),
+                            }
+                        } else {
+                            // No parameter structure - update only Node::params
                             params
                                 .lock()
                                 .unwrap()
                                 .entry(p.name.clone())
-                                .and_modify(|p| p.value = val.clone());
+                                .and_modify(|p| p.value = val.clone())
+                                .or_insert(Parameter::new(val.clone()));
+                            rcl_interfaces::msg::SetParametersResult {
+                                successful: true,
+                                reason: "".into(),
+                            }
+                        };
+                        // if the value changed, send out new value on parameter event stream
+                        if changed && r.successful {
+                            if let Err(e) = event_tx.try_send((p.name.clone(), val)) {
+                                log::debug!("Warning: could not send parameter event ({}).", e);
+                            }
                         }
-                        rcl_interfaces::msg::SetParametersResult {
-                            successful: result.is_ok(),
-                            reason: result.err().map_or("".into(), |e| e.to_string()),
-                        }
-                    } else {
-                        // No parameter structure - update only Node::params
-                        params
-                            .lock()
-                            .unwrap()
-                            .entry(p.name.clone())
-                            .and_modify(|p| p.value = val.clone())
-                            .or_insert(Parameter::new(val.clone()));
-                        rcl_interfaces::msg::SetParametersResult {
-                            successful: true,
-                            reason: "".into(),
-                        }
-                    };
-                    // if the value changed, send out new value on parameter event stream
-                    if changed && r.successful {
-                        if let Err(e) = event_tx.try_send((p.name.clone(), val)) {
-                            log::debug!("Warning: could not send parameter event ({}).", e);
-                        }
+                        result.results.push(r);
                     }
-                    result.results.push(r);
-                }
-                req.respond(result)
-                    .expect("could not send reply to set parameter request");
-                future::ready(())
-            },
-        );
+                    req.respond(result)
+                        .expect("could not send reply to set parameter request");
+                },
+            )?;
         handlers.push(Box::pin(set_params_future));
 
         // rcl_interfaces/srv/GetParameters
-        let get_params_request_stream = self
-            .create_service::<rcl_interfaces::srv::GetParameters::Service>(
-                &format!("{}/get_parameters", node_name),
-                QosProfile::default(),
-            )?;
-
         let params = self.params.clone();
         let params_struct_clone = params_struct.clone();
-        let get_params_future = get_params_request_stream.for_each(
-            move |req: ServiceRequest<rcl_interfaces::srv::GetParameters::Service>| {
-                let params = params.lock().unwrap();
-                let values = req
-                    .message
-                    .names
-                    .iter()
-                    .map(|n| {
-                        // First try to get the parameter from the param structure
-                        if let Some(ps) = &params_struct_clone {
-                            if let Ok(value) = ps.lock().unwrap().get_parameter(n) {
-                                return value;
+        let get_params_future = self
+            .create_service_traced::<rcl_interfaces::srv::GetParameters::Service, _>(
+                &format!("{}/get_parameters", node_name),
+                QosProfile::default(),
+                move |req: ServiceRequest<rcl_interfaces::srv::GetParameters::Service>| {
+                    let params = params.lock().unwrap();
+                    let values = req
+                        .message
+                        .names
+                        .iter()
+                        .map(|n| {
+                            // First try to get the parameter from the param structure
+                            if let Some(ps) = &params_struct_clone {
+                                if let Ok(value) = ps.lock().unwrap().get_parameter(n) {
+                                    return value;
+                                }
                             }
-                        }
-                        // Otherwise get it from node HashMap
-                        match params.get(n) {
-                            Some(v) => v.value.clone(),
-                            None => ParameterValue::NotSet,
-                        }
-                    })
-                    .map(|v| v.into_parameter_value_msg())
-                    .collect::<Vec<rcl_interfaces::msg::ParameterValue>>();
+                            // Otherwise get it from node HashMap
+                            match params.get(n) {
+                                Some(v) => v.value.clone(),
+                                None => ParameterValue::NotSet,
+                            }
+                        })
+                        .map(|v| v.into_parameter_value_msg())
+                        .collect::<Vec<rcl_interfaces::msg::ParameterValue>>();
 
-                let result = rcl_interfaces::srv::GetParameters::Response { values };
-                req.respond(result)
-                    .expect("could not send reply to set parameter request");
-                future::ready(())
-            },
-        );
+                    let result = rcl_interfaces::srv::GetParameters::Response { values };
+                    req.respond(result)
+                        .expect("could not send reply to set parameter request");
+                },
+            )?;
 
         handlers.push(Box::pin(get_params_future));
 
+        let params = self.params.clone();
+
         // rcl_interfaces/srv/ListParameters
         use rcl_interfaces::srv::ListParameters;
-        let list_params_request_stream = self.create_service::<ListParameters::Service>(
+        let list_params_future = self.create_service_traced::<ListParameters::Service, _>(
             &format!("{}/list_parameters", node_name),
             QosProfile::default(),
-        )?;
-
-        let params = self.params.clone();
-        let list_params_future = list_params_request_stream.for_each(
             move |req: ServiceRequest<ListParameters::Service>| {
                 Self::handle_list_parameters(req, &params)
             },
-        );
+        )?;
 
         handlers.push(Box::pin(list_params_future));
 
         // rcl_interfaces/srv/DescribeParameters
         use rcl_interfaces::srv::DescribeParameters;
-        let desc_params_request_stream = self.create_service::<DescribeParameters::Service>(
+        let params = self.params.clone();
+        let desc_params_future = self.create_service_traced::<DescribeParameters::Service, _>(
             &format!("{node_name}/describe_parameters"),
             QosProfile::default(),
-        )?;
-
-        let params = self.params.clone();
-        let desc_params_future = desc_params_request_stream.for_each(
             move |req: ServiceRequest<DescribeParameters::Service>| {
                 Self::handle_desc_parameters(req, &params)
             },
-        );
+        )?;
 
         handlers.push(Box::pin(desc_params_future));
 
         // rcl_interfaces/srv/GetParameterTypes
         use rcl_interfaces::srv::GetParameterTypes;
-        let get_param_types_request_stream = self.create_service::<GetParameterTypes::Service>(
+        let params = self.params.clone();
+        let get_param_types_future = self.create_service_traced::<GetParameterTypes::Service, _>(
             &format!("{node_name}/get_parameter_types"),
             QosProfile::default(),
-        )?;
-
-        let params = self.params.clone();
-        let get_param_types_future = get_param_types_request_stream.for_each(
             move |req: ServiceRequest<GetParameterTypes::Service>| {
                 let params = params.lock().unwrap();
                 let types = req
@@ -444,9 +428,8 @@ impl Node {
                     .collect();
                 req.respond(GetParameterTypes::Response { types })
                     .expect("could not send reply to get parameter types request");
-                future::ready(())
             },
-        );
+        )?;
 
         handlers.push(Box::pin(get_param_types_future));
 
@@ -480,7 +463,7 @@ impl Node {
     fn handle_list_parameters(
         req: ServiceRequest<rcl_interfaces::srv::ListParameters::Service>,
         params: &Arc<Mutex<IndexMap<String, Parameter>>>,
-    ) -> future::Ready<()> {
+    ) {
         use rcl_interfaces::srv::ListParameters;
 
         let depth = req.message.depth;
@@ -517,13 +500,12 @@ impl Node {
         }
         req.respond(ListParameters::Response { result })
             .expect("could not send reply to list parameter request");
-        future::ready(())
     }
 
     fn handle_desc_parameters(
         req: ServiceRequest<rcl_interfaces::srv::DescribeParameters::Service>,
         params: &Arc<Mutex<IndexMap<String, Parameter>>>,
-    ) -> future::Ready<()> {
+    ) {
         use rcl_interfaces::{msg::ParameterDescriptor, srv::DescribeParameters};
         let mut descriptors = Vec::<ParameterDescriptor>::new();
         let params = params.lock().unwrap();
@@ -539,7 +521,6 @@ impl Node {
         }
         req.respond(DescribeParameters::Response { descriptors })
             .expect("could not send reply to describe parameters request");
-        future::ready(())
     }
 
     /// Fetch a single ROS parameter.
