@@ -4,6 +4,7 @@ use futures::{
     stream::{Stream, StreamExt},
 };
 use indexmap::IndexMap;
+use r2r_tracing::TracingId;
 use std::{
     collections::HashMap,
     ffi::{CStr, CString},
@@ -593,6 +594,9 @@ impl Node {
                 qos_profile,
             )?;
         };
+
+        r2r_tracing::trace_subscription_init(&subscription.rcl_handle, &*subscription);
+
         self.subscribers.push(subscription);
         Ok(receiver)
     }
@@ -626,6 +630,9 @@ impl Node {
                 qos_profile,
             )?;
         };
+
+        r2r_tracing::trace_subscription_init(&subscription.rcl_handle, &*subscription);
+
         self.subscribers.push(subscription);
         Ok(receiver)
     }
@@ -659,6 +666,9 @@ impl Node {
                 qos_profile,
             )?;
         };
+
+        r2r_tracing::trace_subscription_init(&subscription.rcl_handle, &*subscription);
+
         self.subscribers.push(subscription);
         Ok(receiver)
     }
@@ -716,6 +726,9 @@ impl Node {
                 qos_profile,
             )?;
         };
+
+        r2r_tracing::trace_subscription_init(&subscription.rcl_handle, &*subscription);
+
         self.subscribers.push(subscription);
         Ok(receiver)
     }
@@ -1021,6 +1034,8 @@ impl Node {
     /// `timeout` is a duration specifying how long the spin should
     /// block for if there are no pending events.
     pub fn spin_once(&mut self, timeout: Duration) {
+        r2r_tracing::trace_spin_start(&*self.node_handle, timeout);
+
         // first handle any completed action cancellation responses
         for a in &mut self.action_servers {
             a.lock().unwrap().send_completed_cancel_requests();
@@ -1184,8 +1199,11 @@ impl Node {
             unsafe {
                 rcl_wait_set_fini(&mut ws);
             }
+            r2r_tracing::trace_spin_timeout(&*self.node_handle);
             return;
         }
+
+        r2r_tracing::trace_spin_wake(&*self.node_handle);
 
         let mut subs_to_remove = vec![];
         if ws.subscriptions != std::ptr::null_mut() {
@@ -1343,6 +1361,8 @@ impl Node {
         unsafe {
             rcl_wait_set_fini(&mut ws);
         }
+
+        r2r_tracing::trace_spin_end(&*self.node_handle);
     }
 
     /// Returns a map of topic names and type names of the publishers
@@ -1446,9 +1466,15 @@ impl Node {
             _clock: Some(clock), // The timer owns the clock.
             sender: tx,
         };
-        self.timers.push(timer);
 
-        let out_timer = Timer { receiver: rx };
+        let out_timer = unsafe {
+            Timer {
+                receiver: rx,
+                timer_handle: TracingId::new(timer.get_handle()),
+                node_handle: TracingId::new(&*self.node_handle),
+            }
+        };
+        self.timers.push(timer);
 
         Ok(out_timer)
     }
@@ -1469,9 +1495,15 @@ impl Node {
             _clock: None, // The timer does not own the clock (the node owns it).
             sender: tx,
         };
-        self.timers.push(timer);
 
-        let out_timer = Timer { receiver: rx };
+        let out_timer = unsafe {
+            Timer {
+                receiver: rx,
+                timer_handle: TracingId::new(timer.get_handle()),
+                node_handle: TracingId::new(&*self.node_handle),
+            }
+        };
+        self.timers.push(timer);
 
         Ok(out_timer)
     }
@@ -1603,6 +1635,8 @@ impl Drop for Timer_ {
 /// A ROS timer.
 pub struct Timer {
     receiver: mpsc::Receiver<Duration>,
+    timer_handle: TracingId<rcl_timer_t>,
+    node_handle: TracingId<rcl_node_t>,
 }
 
 impl Timer {
