@@ -601,6 +601,57 @@ impl Node {
         Ok(receiver)
     }
 
+    /// Subscribe to a ROS topic and create tracepoints around the callback.
+    ///
+    /// This function takes a `callback`, and associates it with the
+    /// subscription, producing a `Future` representing this task.
+    /// The callback will be called with received messages.
+    ///
+    /// Each time the callback is called, its start and end time will be traced by the
+    /// ROS 2 tracing framework.
+    ///
+    /// You must spawn or await the returned [`Future`] otherwise the callback
+    /// will never be called.
+    pub fn subscribe_traced<T, F>(
+        &mut self, topic: &str, qos_profile: QosProfile, callback: F,
+    ) -> Result<impl Future<Output = ()> + Unpin>
+    where
+        T: WrappedTypesupport + 'static,
+        F: FnMut(T),
+    {
+        let (sender, receiver) = mpsc::channel::<T>(10);
+
+        // SAFETY: The `rcl_handle` is not fully initialized yet.
+        let mut subscription = Box::new(TypedSubscriber {
+            rcl_handle: unsafe { rcl_get_zero_initialized_subscription() },
+            sender,
+        });
+
+        // SAFETY:
+        // create_subscription_helper requires zero initialized subscription_handle -> done above
+        // The `rcl_handle` is fully initialized here in `create_subscription_helper`.
+        unsafe {
+            create_subscription_helper(
+                &mut subscription.rcl_handle,
+                self.node_handle.as_mut(),
+                topic,
+                T::get_ts(),
+                qos_profile,
+            )?;
+        };
+
+        r2r_tracing::trace_subscription_init(&subscription.rcl_handle, &*subscription);
+
+        let mut callback = r2r_tracing::Callback::new_subscription(&*subscription, callback);
+        let fut = receiver.for_each(move |msg| {
+            callback.call(msg);
+            future::ready(())
+        });
+
+        self.subscribers.push(subscription);
+        Ok(fut)
+    }
+
     /// Subscribe to a ROS topic.
     ///
     /// This function returns a `Stream` of ros messages without the rust convenience types.
@@ -771,6 +822,61 @@ impl Node {
         // Only push after full initialization.
         self.services.push(service_arc);
         Ok(receiver)
+    }
+
+    /// Create a ROS service and create tracepoints around the callback.
+    ///
+    /// This function takes a `callback`, and associates it with the
+    /// service, producing a `Future` representing this task.
+    /// The callback will be called with received requests.
+    ///
+    /// Each time the callback is called, its start and end time will be traced by the
+    /// ROS 2 tracing framework.
+    ///
+    /// You must spawn or await the returned [`Future`] otherwise the callback
+    /// will never be called.
+    pub fn create_service_traced<T, F>(
+        &mut self, service_name: &str, qos_profile: QosProfile, callback: F,
+    ) -> Result<impl Future<Output = ()> + Unpin>
+    where
+        T: WrappedServiceTypeSupport + 'static,
+        F: FnMut(ServiceRequest<T>),
+    {
+        let (sender, receiver) = mpsc::channel::<ServiceRequest<T>>(10);
+
+        // SAFETY: The `rcl_handle` is zero initialized (partial initialization) in this block.
+        let mut service_arc = Arc::new(Mutex::new(TypedService::<T> {
+            rcl_handle: unsafe { rcl_get_zero_initialized_service() },
+            sender,
+        }));
+
+        let service_ref = Arc::get_mut(&mut service_arc)
+            .unwrap() // No other Arc should exist. The Arc was just created.
+            .get_mut()
+            .unwrap(); // The mutex was just created. It should not be poisoned.
+
+        // SAFETY:
+        // The service was zero initialized above.
+        // Full initialization happens in `create_service_helper`.
+        unsafe {
+            create_service_helper(
+                &mut service_ref.rcl_handle,
+                self.node_handle.as_mut(),
+                service_name,
+                T::get_ts(),
+                qos_profile,
+            )?;
+        };
+
+        let mut callback = r2r_tracing::Callback::new_service(&service_ref.rcl_handle, callback);
+        let fut = receiver.for_each(move |req| {
+            callback.call(req);
+            future::ready(())
+        });
+
+        // Only push after full initialization.
+        self.services.push(service_arc);
+        Ok(fut)
     }
 
     /// Create a ROS service client.
@@ -1650,6 +1756,23 @@ impl Timer {
         } else {
             Err(Error::RCL_RET_TIMER_INVALID)
         }
+    }
+
+    /// Transforms this timer stream to a [`Future`] calling the given `callback` on each tick.
+    ///
+    /// The callback execution is traced by r2r_tracing.
+    ///
+    /// This function should be called before dropping the timer's node.
+    /// Otherwise, the trace data might be inconsistent.
+    #[must_use = "Futures do nothing unless you `.await` or poll them"]
+    pub fn on_tick<F: FnMut(Duration)>(self, callback: F) -> impl Future<Output = ()> + Unpin {
+        let mut callback = r2r_tracing::Callback::new_timer(self.timer_handle, callback);
+        r2r_tracing::trace_timer_link_node(self.timer_handle, self.node_handle);
+
+        self.receiver.for_each(move |duration| {
+            callback.call(duration);
+            future::ready(())
+        })
     }
 }
 
