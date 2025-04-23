@@ -1,5 +1,5 @@
 /// Unique identifier for tracing purposes
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct TracingId<T> {
     /// Pointer to the object used as a unique ID.
     /// Safety: Do NOT dereference the pointer.
@@ -28,6 +28,21 @@ impl<T> TracingId<T> {
         }
     }
 
+    /// Erase the generic type of the ID.
+    #[must_use]
+    pub fn forget_type(self) -> TracingId<std::ffi::c_void> {
+        #[cfg(not(feature = "tracing"))]
+        unsafe {
+            // Safety: The ID cannot be obtained back without the `tracing` feature.
+            TracingId::new(std::ptr::null())
+        }
+        #[cfg(feature = "tracing")]
+        unsafe {
+            // Safety: self contains valid ID.
+            TracingId::new(self.c_void())
+        }
+    }
+
     /// Obtain the address representing the ID.
     ///
     /// # Safety
@@ -37,6 +52,18 @@ impl<T> TracingId<T> {
         self.id.cast::<std::ffi::c_void>()
     }
 }
+
+/// Deriving Clone for `TracingId` would only derive it only conditionally based on whether the
+/// `T` is `Clone` or not.
+impl<T> Clone for TracingId<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+/// Deriving Clone for `TracingId` would only derive it only conditionally based on whether the
+/// `T` is `Clone` or not.
+impl<T> Copy for TracingId<T> {}
 
 /// # Safety
 ///
