@@ -4,7 +4,6 @@ use futures::{executor::LocalPool, task::LocalSpawnExt};
 
 use r2r::{std_msgs::msg, std_srvs::srv, QosProfile};
 
-
 /// This example demonstrates creation of a service,
 /// subscriber and timers with their callback execution traced.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,17 +15,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The traced callback is supplied directly to `subscribe_traced`
     // and `create_service_traced`functions.
-    let subscriber_future =
-        node.subscribe_traced("/print", QosProfile::default(), |msg: msg::String| {
+    let subscriber_future = node
+        .subscribe("/print", QosProfile::default())?
+        .traced_callback(|msg: msg::String| {
             println!("Received message: '{}'", msg.data);
-        })?;
+        });
     spawner.spawn_local(subscriber_future)?;
 
     let mut value = false;
-    let service_future = node.create_service_traced::<srv::SetBool::Service, _>(
-        "/set_value",
-        QosProfile::default(),
-        move |req| {
+    let service_future = node
+        .create_service::<srv::SetBool::Service>("/set_value", QosProfile::default())?
+        .traced_callback(move |req| {
             if value == req.message.data {
                 req.respond(srv::SetBool::Response {
                     success: false,
@@ -41,8 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .expect("could not send service response");
             }
-        },
-    )?;
+        });
     spawner.spawn_local(service_future)?;
 
     let mut counter = 0;
